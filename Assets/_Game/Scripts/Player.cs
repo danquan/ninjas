@@ -1,26 +1,29 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Security.Cryptography;
 using UnityEngine;
 
-public class Player : MonoBehaviour
+public class Player : Character
 {
     [SerializeField] private Rigidbody2D rb;
-    [SerializeField] private Animator anim;
     [SerializeField] private LayerMask groundLayer;
     [SerializeField] private float speed = 10;
     [SerializeField] private float jumpForce = 350;
+    [SerializeField] private Kunai kunai;
+    [SerializeField] private Transform kunaiThrowPoint;
+    [SerializeField] private GameObject attackArea;
 
-    private int numCoin = 0; // store for compute score
-    
+    private int numCoin = 0; // store for compute scores
+    private int jumpButton = 0;
+
     private bool isGrounded;
     private bool isJumping;
     private bool isAttacking;
     private bool isThrowing;
-    private bool isDead;
 
-    //to save player's animation
-    private string currentAnim;
+    // an attack event should be happen after at least 0.4s from the previous one
+    private float attackTimer = 0f;
 
     // to save velocity of player
     private float horizontal; //, vertical;
@@ -33,46 +36,76 @@ public class Player : MonoBehaviour
         SavePoint();
         OnInit();
     }
-
-    public void OnInit()
+    public override void OnInit()
     {
-        isDead = false;
+        // for default setting
+        base.OnInit();
+
         isAttacking = false;
         isJumping = false; 
         isThrowing = false;
 
+        // default Coins
+        UIManager.instance.SetCoin(0);
+
         transform.position = savePoint;
         ChangeAnim("idle");
+
+        DeactiveAttack();
+    }
+
+    protected override void OnDeath()
+    {
+        base.OnDeath();
+
+        Invoke(nameof(OnInit), 0.5f);
     }
 
     // Update is called once per frame
     void Update()
     {
-        if(isDead)
+        // an attack event should be happen after at least 0.4s from the previous one
+        attackTimer = Mathf.Min(attackTimer + Time.deltaTime, 0.4f);
+
+        // Update Coin
+        UIManager.instance.SetCoin(numCoin);
+
+        //Debug.Log("Current HP: " + hp);
+        if(IsDead())
         { 
             return;
         }
 
         isGrounded = CheckGrounded();
 
-        horizontal = Input.GetAxisRaw("Horizontal");
+        // Get Horizontal Movement
+        /*if (Input.GetKeyDown(KeyCode.A) || Input.GetKeyDown(KeyCode.LeftArrow))
+            SetDirectionHorizontal(-1);
+        else if (Input.GetKeyDown(KeyCode.D) || Input.GetKeyDown(KeyCode.RightArrow))
+            SetDirectionHorizontal(1);
+        else
+            SetDirectionHorizontal(0);*/
+
+        //horizontal = Input.GetAxisRaw("Horizontal");
         //vertical = Input.GetAxisRaw("Vertical");
 
-        // If ninja is on the floor
+            // If ninja is on the floor
         if (isGrounded)
         {
             // Jumping
-            if (Input.GetKeyDown(KeyCode.Space))
+            if (Input.GetKeyDown(KeyCode.Space) || Input.GetKeyDown(KeyCode.W) || Input.GetKeyDown(KeyCode.UpArrow) || jumpButton == 1)
             {
                 Jump();
             }
-            else if (isJumping && rb.velocity.y < 0)
-            {
-                isJumping = false;
-            }
             
+            // Stop Jumping
+            if (isJumping && rb.velocity.y <= 0)
+            {
+                StopJump();
+            }
+
             //Attack
-            if(Input.GetKeyDown(KeyCode.J))
+            if (Input.GetKeyDown(KeyCode.J))
             {
                 Attack();
             }
@@ -84,7 +117,7 @@ public class Player : MonoBehaviour
             }
         }
         // Falling down
-        else if (Mathf.Abs(rb.velocity.x) >= 0.1f && rb.velocity.y < 0)
+        else if (/*Mathf.Abs(rb.velocity.x) >= 0.1f &&*/ rb.velocity.y < 0)
         {
             ChangeAnim("fall");
         }
@@ -106,12 +139,16 @@ public class Player : MonoBehaviour
             //transform.localScale = new Vector3(horizontal, 1, 1);
         }
         // idle
-        else if(isGrounded) // For sure, ninja's not jumping
+        else if(isGrounded && !isJumping) // For sure, ninja's not jumping
         {
+            Debug.Log("HERE");
             if(!isAttacking && !isThrowing)
                 ChangeAnim("idle");
             rb.velocity = Vector2.zero;
         }
+
+        ///// Reset Button Up
+        jumpButton = 0;
     }
     internal void SavePoint()
     {
@@ -119,23 +156,41 @@ public class Player : MonoBehaviour
     }
 
     // Implement for Attacking
-    private void Attack()
+    public void Attack()
     {
-        isAttacking = true;
         rb.velocity = Vector2.zero;
-        ChangeAnim("attack");
 
-        Invoke(nameof(ResetAttack), 0.3f);
+        // an attack event should be happen after at least 0.4s from the previous one
+        if (attackTimer >= 0.4f)
+        {
+            isAttacking = true;
+            ChangeAnim("attack");
+            ActiveAttack();
+            attackTimer = 0f;
+            Invoke(nameof(ResetAttack), 0.3f);
+        }
+
     }
     private void ResetAttack()
     {
         isAttacking = false;
+        DeactiveAttack();
     }
-    private void Throw()
+    private void ActiveAttack()
+    {
+        attackArea.SetActive(true);
+    }
+    private void DeactiveAttack()
+    {
+        attackArea.SetActive(false);
+    }
+
+    public void Throw()
     {
         isThrowing = true;
         rb.velocity = Vector2.zero;
         ChangeAnim("throw");
+        Instantiate(kunai, kunaiThrowPoint.position, kunaiThrowPoint.rotation);
 
         Invoke("ResetThrow", 0.3f);
     }
@@ -143,12 +198,36 @@ public class Player : MonoBehaviour
     {
         isThrowing = false;
     }
-    private void Jump()
+
+    public void JumpButton(int jumpButton)
+    {
+        this.jumpButton = jumpButton;
+    }
+    public void Jump()
     {
         isJumping = true;
         ChangeAnim("jump");
         rb.AddForce(jumpForce * Vector2.up);
     }
+    private void StopJump()
+    {
+        isJumping = false;
+    }
+    private bool CheckGrounded()
+    {
+        //Debug.DrawLine(transform.position, transform.position + Vector3.down * 1.1f, Color.red);
+
+        RaycastHit2D hit = Physics2D.Raycast(transform.position, Vector2.down, 1.1f, groundLayer);
+        
+        return hit.collider != null;
+    }
+
+    public void SetDirectionHorizontal(float horizontal)
+    {
+        //Debug.Log("Direction: " + (horizontal < 0 ? "Left" : "Right"));
+        this.horizontal = horizontal;
+    }
+
     private void OnTriggerEnter2D(Collider2D collision)
     {
         if(collision.tag == "Coin")
@@ -160,31 +239,9 @@ public class Player : MonoBehaviour
         if(collision.tag == "DeathZone")
         {
             //Debug.Log("Must Dead");
-            ChangeAnim("die");
-            isDead = true;
-
-            Invoke(nameof(OnInit), 0.5f);
+            OnDeath();
         }
-    }
-    private void ChangeAnim(string animName)
-    {
-        if(currentAnim != animName)
-        {
-            //Debug.Log(currentAnim + " change to " + animName);
-            anim.ResetTrigger(animName);
-            currentAnim = animName;
-            anim.SetTrigger(currentAnim);
-            //Debug.Log("It's now " + currentAnim);
-            //Debug.Log(anim.name);
-        }
-    }
-    private bool CheckGrounded()
-    {
-        //Debug.DrawLine(transform.position, transform.position + Vector3.down * 1.1f, Color.red);
 
-        RaycastHit2D hit = Physics2D.Raycast(transform.position, Vector2.down, 1.1f, groundLayer);
-        
-        return hit.collider != null;
     }
 
 }
